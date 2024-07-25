@@ -3,6 +3,12 @@ from dimensions import *
 from colors import *
 import cv2
 
+def is_inside_interval(value, x_min, x_max):
+    if value>x_min and value<x_max:
+        return True
+    else: 
+        return False
+
 def map(value, in_min, in_max, out_min, out_max):
     if value <= in_min:
         return out_min
@@ -135,19 +141,33 @@ def normalize_weights(weights):
     else:
         return weights/np.sum(weights)
 
-def generate_enemies(n_enemies, env_limits, prohibited_zone_limits):
+def generate_goalkeeper(gk_area_limits, goal_width):
+    zone_xmin, zone_xmax, zone_ymin, zone_ymax = gk_area_limits
+    
+    # Initialize goalkeeper
+    x = np.random.uniform(zone_xmax - 2*robot_diameter, zone_xmax)
+    y = np.random.uniform(-goal_width/2, goal_width/2)
+    gk = np.array([x, y])
+                
+    return gk 
+
+def generate_enemies(n_enemies, env_limits, gk_area_limits, has_goalkeeper):
     env_xmin, env_xmax, env_ymin, env_ymax = env_limits
-    zone_xmin, zone_xmax, zone_ymin, zone_ymax = prohibited_zone_limits
     
     # Initialize enemies
     enemies = np.zeros((n_enemies, 2))
-    for i in range(n_enemies):
+    
+    if has_goalkeeper:
+        enemies[0] = generate_goalkeeper(gk_area_limits=GK_AREA,
+                                         goal_width=goal_width)
+
+    for i in range(int(has_goalkeeper), n_enemies):
         x = np.random.uniform(env_xmin, env_xmax)
         y = np.random.uniform(env_ymin, env_ymax)
         enemy = np.array([x, y])
         
         while is_out_of_environment(enemy, env_limits) or \
-              is_inside_zone(enemy, prohibited_zone_limits):
+              is_inside_zone(enemy, gk_area_limits):
             x = np.random.uniform(env_xmin, env_xmax)
             y = np.random.uniform(env_ymin, env_ymax)
             enemy = np.array([x, y])
@@ -207,7 +227,93 @@ def compute_observation_from_angle_to_goal(measurement, best_angle, alpha=0.15):
         normalized_angle_diff = abs(measurement - best_angle) / best_angle
         angle_likelihood = np.exp(-alpha * normalized_angle_diff)
         p_z = angle_likelihood
-        return p_z
+        return p_z    
+
+def get_free_space_on_goal(particle, enemies, goal_width, field_limits):
+    goal_center = np.array([field_limits[1], 0])
+    goal_segment = np.array([-goal_width/2, goal_width/2])
+    r = robot_diameter/2
+    shadow_segments = []
+    for enemy in enemies:
+        if (np.dot(enemy-particle, goal_center-particle)>=0):
+            # 1) Compute distances to intersection points
+            l = np.sqrt(r**2 + get_dist(particle, enemy)**2)
+            
+            # 2) Compute intersection points' coordinates w.r.t. the particle
+            #    (x1, y1) and (x2, y2) are actually the vector: intersection point - particle
+            #    we use this vector because it simplifies our desired calculations
+            x1 = (enemy[0]+r*enemy[1]/l)/(1+r**2/l**2)
+            y1 = (enemy[1]-r*enemy[0]/l)/(1+r**2/l**2)
+            x2 = (enemy[0]-r*enemy[1]/l)/(1+r**2/l**2)
+            y2 = (enemy[1]+r*enemy[0]/l)/(1+r**2/l**2)
+            
+            # 3) Compute y coordiantes of the projections:
+            #    particle->intersection point->goal line
+            y1_proj = particle[1] + y1*(goal_center[0]-particle[0])/x1
+            y2_proj = particle[1] + y2*(goal_center[0]-particle[0])/x2
+            should_add_to_segments_list = is_inside_interval(y1_proj, np.min(goal_segment), np.max(goal_segment)) or \
+                                          is_inside_interval(y2_proj, np.min(goal_segment), np.max(goal_segment))
+            if should_add_to_segments_list:
+                # 4) Add coordinates to segments' list
+                segment_bounds = np.array([y1_proj, y2_proj])
+                shadow_segments.append(segment_bounds)
+    
+    # 5) Check if shadows exist
+    if len(shadow_segments)==0:
+        return np.max(goal_segment)-np.min(goal_segment)
+    
+    # 6) Sort segments by their starting points
+    shadow_segments = np.sort(shadow_segments, axis=0)
+    
+    # Merge the intervals of the other segments
+    merged_intervals = []
+    current_start, current_end = shadow_segments[0]
+
+    for start, end in shadow_segments[1:]:
+        if start <= current_end:
+            current_end = max(current_end, end)
+        else:
+            merged_intervals.append([current_start, current_end])
+            current_start, current_end = start, end
+    merged_intervals.append([current_start, current_end])
+    
+    # Calculate the free spaces within the first segment
+    free_spaces = []
+    first_start, first_end = np.min(goal_segment), np.max(goal_segment)
+
+    # Adjust merged intervals to lie within the first segment's boundaries
+    adjusted_intervals = [
+        [max(first_start, interval[0]), min(first_end, interval[1])]
+        for interval in merged_intervals
+        if max(first_start, interval[0]) < min(first_end, interval[1])
+    ]
+
+    # Check for free space before the first adjusted interval
+    if adjusted_intervals[0][0] > first_start:
+        free_spaces.append([first_start, adjusted_intervals[0][0]])
+
+    # Check for free spaces between adjusted intervals
+    for i in range(1, len(adjusted_intervals)):
+        if adjusted_intervals[i][0] > adjusted_intervals[i-1][1]:
+            free_spaces.append([adjusted_intervals[i-1][1], adjusted_intervals[i][0]])
+
+    # Check for free space after the last adjusted interval
+    if adjusted_intervals[-1][1] < first_end:
+        free_spaces.append([adjusted_intervals[-1][1], first_end])
+    
+    # Calculate the lengths of the free spaces
+    free_space_lengths = [end - start for start, end in free_spaces]
+
+    # Return the length of the longest free space
+    if len(free_spaces)>1:
+        return np.max(free_space_lengths)
+    else:
+        return 0
+
+def compute_observation_from_free_space_on_goal(measurement, ideal_space=goal_width, alpha=0.1):
+    normalize_space = abs(measurement - ideal_space) / ideal_space
+    p_z = np.exp(-alpha * normalize_space)
+    return p_z
 
 def cumulative_sum(weights):
     """
@@ -286,25 +392,28 @@ if __name__ == "__main__":
         
     # generate random particles in the environment
     weights, particles = initialize_particles_uniform(n_particles=n_particles, 
-                                                    env_limits=PARTICLES_WORKSPACE,
-                                                    prohibited_zone_limits=GK_AREA)
+                                                      env_limits=PARTICLES_WORKSPACE,
+                                                      prohibited_zone_limits=GK_AREA_WITH_MARGINS)
         
     while True:
         # generate random enemies inside allowed zone
         enemies = generate_enemies(n_enemies=n_enemies, 
-                                env_limits=ENEMIES_WORKSPACE,
-                                prohibited_zone_limits=GK_AREA)
-        
+                                   env_limits=ENEMIES_WORKSPACE,
+                                   gk_area_limits=GK_AREA,
+                                   has_goalkeeper=True)
+                
         while True:
             # assing weights to the particles
             for idx, particle in enumerate(particles):
                 distance_to_goal = get_distance_to_goal_center(particle, FIELD)
                 distance_to_closest_enemy = get_distance_to_closest_enemy(particle, enemies)
                 angle_to_goal = get_angle_to_goal(particle, goal_width, FIELD)
+                best_free_space_on_goal = get_free_space_on_goal(particle, enemies, goal_width, FIELD)
                 p_z = compute_observation_from_distance_to_goal(distance_to_goal) * \
                       compute_observation_from_closest_enemy_distance(distance_to_closest_enemy) * \
                       compute_observation_from_angle_to_goal(angle_to_goal, best_shooting_angle) * \
-                      (1-is_inside_zone(particle, GK_AREA)) * \
+                      compute_observation_from_free_space_on_goal(best_free_space_on_goal) * \
+                      (1-is_inside_zone(particle, GK_AREA_WITH_MARGINS)) * \
                       (1-is_out_of_environment(particle, FIELD))
 
                 weights[idx] = p_z * weights[idx]
@@ -317,7 +426,7 @@ if __name__ == "__main__":
                                                      delta,
                                                      search_factor,
                                                      PARTICLES_WORKSPACE,
-                                                     GK_AREA)
+                                                     GK_AREA_WITH_MARGINS)
             
             should_break = visualize_with_opencv(weights, 
                                                  particles,

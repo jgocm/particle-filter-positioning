@@ -34,6 +34,10 @@ enemies_workspace_ymax = gk_area_ymax + 500
 # define envs
 FIELD = field_xmin, field_xmax, field_ymin, field_ymax
 GK_AREA = gk_area_xmin, gk_area_xmax, gk_area_ymin, gk_area_ymax
+GK_AREA_WITH_MARGINS = gk_area_xmin - 1.5*robot_diameter, \
+                       gk_area_xmax + 1.5*robot_diameter, \
+                       gk_area_ymin - 1.5*robot_diameter, \
+                       gk_area_ymax + 1.5*robot_diameter
 PARTICLES_WORKSPACE = particles_workspace_xmin, particles_workspace_xmax, particles_workspace_ymin, particles_workspace_ymax
 ENEMIES_WORKSPACE = enemies_workspace_xmin, enemies_workspace_xmax, enemies_workspace_ymin, enemies_workspace_ymax
 

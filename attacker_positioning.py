@@ -1,3 +1,4 @@
+import time
 import numpy as np
 from dimensions import *
 from colors import *
@@ -306,7 +307,7 @@ def get_free_space_on_goal(particle, enemies, goal_width, field_limits):
 
     # Return the length of the longest free space
     if len(free_spaces)>1:
-        return np.max(free_space_lengths)
+        return np.sum(free_space_lengths)
     else:
         return 0
 
@@ -404,17 +405,18 @@ if __name__ == "__main__":
                 
         while True:
             # assing weights to the particles
+            t0 = time.time()
             for idx, particle in enumerate(particles):
                 distance_to_goal = get_distance_to_goal_center(particle, FIELD)
                 distance_to_closest_enemy = get_distance_to_closest_enemy(particle, enemies)
                 angle_to_goal = get_angle_to_goal(particle, goal_width, FIELD)
-                best_free_space_on_goal = get_free_space_on_goal(particle, enemies, goal_width, FIELD)
+                #best_free_space_on_goal = get_free_space_on_goal(particle, enemies, goal_width, FIELD)
                 p_z = compute_observation_from_distance_to_goal(distance_to_goal) * \
                       compute_observation_from_closest_enemy_distance(distance_to_closest_enemy) * \
                       compute_observation_from_angle_to_goal(angle_to_goal, best_shooting_angle) * \
-                      compute_observation_from_free_space_on_goal(best_free_space_on_goal) * \
                       (1-is_inside_zone(particle, GK_AREA_WITH_MARGINS)) * \
                       (1-is_out_of_environment(particle, FIELD))
+                      #compute_observation_from_free_space_on_goal(best_free_space_on_goal) * \
 
                 weights[idx] = p_z * weights[idx]
             
@@ -427,7 +429,8 @@ if __name__ == "__main__":
                                                      search_factor,
                                                      PARTICLES_WORKSPACE,
                                                      GK_AREA_WITH_MARGINS)
-            
+            t1 = time.time()
+            print(t1-t0)
             should_break = visualize_with_opencv(weights, 
                                                  particles,
                                                  enemies,

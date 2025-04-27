@@ -25,7 +25,7 @@ def draw_env_limits(img, env_limits, env_color):
     pt2 = int(xmax/10 + img_center_x), int(ymax/10 + img_center_y)
     cv2.rectangle(img, pt1, pt2, env_color, 1)
 
-def visualize_with_opencv(weights, particles, enemies, field, gk_area, particles_workspace, frame_duration=0):
+def visualize_with_opencv(current_command, current_likelihood, average_likelihood, weights, particles, enemies, field, gk_area, particles_workspace, frame_duration=0):
     img_height, img_width = int(field_width/10 + 2*boundary_width/10), int(field_length/10 + 2*boundary_width/10)
     img = np.zeros((img_height, img_width, 3), dtype=np.uint8)
     
@@ -43,9 +43,15 @@ def visualize_with_opencv(weights, particles, enemies, field, gk_area, particles
     x, y = int(average_particle[0]/10+img_width/2), int(average_particle[1]/10+img_height/2)
     cv2.circle(img, (x, y), 9, GREEN, -1)
     
+    x, y = int(current_command[0]/10+img_width/2), int(current_command[1]/10+img_height/2)
+    cv2.circle(img, (x, y), 9, LIGHT_BLUE, -1)
+    
     draw_env_limits(img, field, WHITE)
     draw_env_limits(img, gk_area, WHITE)
     draw_env_limits(img, particles_workspace, RED)
+    
+    cv2.putText(img, f'Current Likelihood: {current_likelihood:0.3f}', (40, 50), 1, 1.0, WHITE, 1)
+    cv2.putText(img, f'Best Likelihood: {average_likelihood:0.3f}', (40, 70), 1, 1.0, WHITE, 1)
     
     cv2.imshow('test', img)
     
@@ -381,12 +387,27 @@ def get_highest_angle_to_shoot(gk_area_limits, goal_width, field_limits):
     closest_position_to_shoot = np.array([gk_area_xmin-robot_diameter, 0])  
     return get_angle_to_goal(closest_position_to_shoot, goal_width, field_limits)
 
+def compute_particle_likelihood(particle, enemies, goal_width, best_shooting_angle, GK_AREA_WITH_MARGINS, FIELD):
+    distance_to_goal = get_distance_to_goal_center(particle, FIELD)
+    distance_to_closest_enemy = get_distance_to_closest_enemy(particle, enemies)
+    angle_to_goal = get_angle_to_goal(particle, goal_width, FIELD)
+    #best_free_space_on_goal = get_free_space_on_goal(particle, enemies, goal_width, FIELD)
+    p_z = compute_observation_from_distance_to_goal(distance_to_goal) * \
+            compute_observation_from_closest_enemy_distance(distance_to_closest_enemy) * \
+            compute_observation_from_angle_to_goal(angle_to_goal, best_shooting_angle) * \
+            (1-is_inside_zone(particle, GK_AREA_WITH_MARGINS)) * \
+            (1-is_out_of_environment(particle, FIELD))
+            #compute_observation_from_free_space_on_goal(best_free_space_on_goal) * \
+    
+    return p_z
+
 if __name__ == "__main__":
     # config number of enemies and particles
     n_particles = 100
     n_enemies = 6
     delta = robot_diameter/2
     search_factor = 0.01
+    minimum_likelihood_difference_to_change_command = 0.01
     best_shooting_angle = get_highest_angle_to_shoot(GK_AREA, 
                                                      goal_width,
                                                      FIELD)
@@ -395,6 +416,8 @@ if __name__ == "__main__":
     weights, particles = initialize_particles_uniform(n_particles=n_particles, 
                                                       env_limits=PARTICLES_WORKSPACE,
                                                       prohibited_zone_limits=GK_AREA_WITH_MARGINS)
+    
+    current_command = particles[0]
         
     while True:
         # generate random enemies inside allowed zone
@@ -405,18 +428,13 @@ if __name__ == "__main__":
                 
         while True:
             # assing weights to the particles
-            t0 = time.time()
             for idx, particle in enumerate(particles):
-                distance_to_goal = get_distance_to_goal_center(particle, FIELD)
-                distance_to_closest_enemy = get_distance_to_closest_enemy(particle, enemies)
-                angle_to_goal = get_angle_to_goal(particle, goal_width, FIELD)
-                #best_free_space_on_goal = get_free_space_on_goal(particle, enemies, goal_width, FIELD)
-                p_z = compute_observation_from_distance_to_goal(distance_to_goal) * \
-                      compute_observation_from_closest_enemy_distance(distance_to_closest_enemy) * \
-                      compute_observation_from_angle_to_goal(angle_to_goal, best_shooting_angle) * \
-                      (1-is_inside_zone(particle, GK_AREA_WITH_MARGINS)) * \
-                      (1-is_out_of_environment(particle, FIELD))
-                      #compute_observation_from_free_space_on_goal(best_free_space_on_goal) * \
+                p_z = compute_particle_likelihood(particle, 
+                                                  enemies, 
+                                                  goal_width, 
+                                                  best_shooting_angle, 
+                                                  GK_AREA_WITH_MARGINS, 
+                                                  FIELD)
 
                 weights[idx] = p_z * weights[idx]
             
@@ -429,9 +447,30 @@ if __name__ == "__main__":
                                                      search_factor,
                                                      PARTICLES_WORKSPACE,
                                                      GK_AREA_WITH_MARGINS)
-            t1 = time.time()
-            print(t1-t0)
-            should_break = visualize_with_opencv(weights, 
+
+            average_particle = get_average_particle(weights, particles)
+
+            average_likelihood = compute_particle_likelihood(average_particle,
+                                                          enemies, 
+                                                          goal_width, 
+                                                          best_shooting_angle, 
+                                                          GK_AREA_WITH_MARGINS, 
+                                                          FIELD)
+
+            current_likelihood = compute_particle_likelihood(current_command,
+                                                             enemies, 
+                                                             goal_width, 
+                                                             best_shooting_angle, 
+                                                             GK_AREA_WITH_MARGINS, 
+                                                             FIELD)
+            
+            if average_likelihood - current_likelihood > minimum_likelihood_difference_to_change_command:
+                current_command = average_particle
+            
+            should_break = visualize_with_opencv(current_command,
+                                                 current_likelihood,
+                                                 average_likelihood,                                                 
+                                                 weights, 
                                                  particles,
                                                  enemies,
                                                  FIELD, 
